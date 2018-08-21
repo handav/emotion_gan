@@ -9,16 +9,16 @@ landscapes
 │   │   315774020_55984b813f.jpg
 │   │   ...
 │   field
-│   │
+│   │   ...
 │   forest   
-│   │
+│   │   ...
 │   lake
-│   │
+│   │   ...
 │   mountain
-│   │
+│   │   ...
 │   ocean
-│   │
+│   │   ...
 │   road
-│   │   
+└───  
 
 ```
