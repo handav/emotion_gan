@@ -27,7 +27,7 @@ parser.add_argument('--channels', default=3, type=int)
 parser.add_argument('--dataset', default='cifar', help='dataset to train with')
 parser.add_argument('--z_dim', default=64, type=int, help='dimensionality of latent space')
 parser.add_argument('--data_threads', type=int, default=5, help='number of data loading threads')
-parser.add_argument('--nclass', type=int, default=10, help='number of data loading threads')
+parser.add_argument('--nclass', type=int, default=10, help='number of classes')
 
 opt = parser.parse_args()
 
@@ -77,9 +77,13 @@ netG.cuda()
 criterion = nn.BCELoss()
 criterion.cuda()
 # ---------------- datasets ----------------
-trainset, testset = utils.load_dataset(opt) 
-train_loader = torch.utils.data.DataLoader(trainset, batch_size=opt.batch_size, shuffle=True, num_workers=opt.data_threads)
-test_loader = torch.utils.data.DataLoader(testset, batch_size=opt.batch_size, shuffle=False, num_workers=opt.data_threads)
+trainset = utils.load_dataset(opt) 
+train_loader = torch.utils.data.DataLoader(
+        trainset, 
+        batch_size=opt.batch_size, 
+        shuffle=True, 
+        drop_last=True, 
+        num_workers=opt.data_threads)
 
 
 def get_training_batch():
@@ -88,18 +92,12 @@ def get_training_batch():
             yield [x.cuda(), y.cuda()]
 training_batch_generator = get_training_batch()
 
-def get_testing_batch():
-    while True:
-        for x, y in test_loader:
-            yield [x.cuda(), y.cuda()]
-testing_batch_generator = get_testing_batch()
-
 z_fixed = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
 real_label = 1
 fake_label = 0
 
 def plot_gen(epoch):
-    nrow = 10
+    nrow = opt.nclass 
     ncol = 10 
 
     # randomly sample classes

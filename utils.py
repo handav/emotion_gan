@@ -37,15 +37,20 @@ def load_dataset(opt):
                 train=True, 
                 download=True, 
                 transform=transform)
-        test_data = torchvision.datasets.CIFAR10(
-                root=opt.data_root, 
-                train=False, 
-                download=True, 
-                transform=transform)
+    elif opt.dataset == 'emotion_landscapes':
+        from emotion_lanscapes import EmotionLoader
+        transform = transforms.Compose([
+            transforms.RandomCrop(300),
+            transforms.Resize(opt.image_width),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ToTensor() # converts to torch tensor and scales from [0, 255] -> [0, 1]
+            ])
+               
+        train_data = EmotionLoader(transform)
     else:
         raise ValueError('Unknown dataset %s' % opt.dataset)
     
-    return train_data, test_data
+    return train_data
 
 def is_sequence(arg):
     return (not hasattr(arg, "strip") and

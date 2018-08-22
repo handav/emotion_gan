@@ -1,3 +1,4 @@
 landscapes/
 data/
 logs/
+__pycache__
