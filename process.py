@@ -19,7 +19,7 @@ def process_results(csv_file):
         # remove the header from the results
         results.pop(0)
 
-    # not using all of these, but helps to identify possible info
+    # not using all of these, but helps to identify possible info from the input csv
     for i, item in enumerate(header):
         if header[i] == 'emotion_types':
             emotion_types_index = i 
@@ -31,16 +31,27 @@ def process_results(csv_file):
             extra_info_index = i
         if header[i] == 'category':
             category_index = i
-        
-    with open(output_csv, 'w') as csvfile:
-        writer = csv.writer(csvfile)
-        for result in results:
-            filename = parse_filename_from_url(result[image_url_index])
-            file_path = path_to_images + result[category_index] + '/' + filename
-            # emotion tags, separated by a space
-            labels = ' '.join(result[emotion_types_index].split('\n'))
-            writer.writerow([file_path, labels])
 
+    all_images = {}
+    for result in results:
+        filename = parse_filename_from_url(result[image_url_index])
+        file_path = path_to_images + result[category_index] + '/' + filename
+        # emotion tags, separated by a space
+        labels = ' '.join(result[emotion_types_index].split('\n'))
+        if file_path in all_images.keys():
+            all_images[file_path].append(labels)
+        else:
+            all_images[file_path] = [labels]
+
+    with open(output_csv, 'w') as csvfile:
+        writer = csv.writer(csvfile)           
+        for key, value in all_images.items():
+            emos = []
+            for v in value:
+                for va in v.split('\r'):
+                    emos.append(va.strip())
+            writer.writerow([key, ' '.join(emos)])
     csvfile.close()
+    print len(results)/3
 
 process_results(results_csv)
