@@ -56,6 +56,13 @@ else:
     raise ValueError('Unknown optimizer: %s' % opt.optimizer)
 
 # ---------------- load the models ----------------
+# the generator maps [z, y_vec] -> x
+# z dimensions: [batch_size, z_dim, 1, 1]
+# y_vec dimensions: [batch_size, nclass, 1, 1]
+#
+# the discriminator maps [x, y_im] -> prediction
+# x dimensions: [batch_size, channels, image_width, image_width]
+# y_im dimensions: [batch_size, nclass, image_width, image_width] (i.e., one hot vector expanded to be of dimensionality of image)
 import models.dcgan as models
 if opt.image_width == 64:
     netG = models.generator_64x64(opt.z_dim+opt.nclass, opt.channels)
@@ -76,8 +83,10 @@ optimizerG = opt.optimizer(netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999
 netD.cuda()
 netG.cuda()
 
+# loss function for discriminator
 criterion = nn.BCELoss()
 criterion.cuda()
+
 # ---------------- datasets ----------------
 trainset = utils.load_dataset(opt) 
 train_loader = torch.utils.data.DataLoader(
@@ -94,6 +103,7 @@ def get_training_batch():
             yield [x.cuda(), y.cuda()]
 training_batch_generator = get_training_batch()
 
+# so all our generations use same noise vector - useful for visualizaiton purposes
 z_fixed = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
 real_label = 1
 fake_label = 0
@@ -122,6 +132,7 @@ def plot_gen(epoch):
 def train(x):
     x, y = x
 
+    # convert the integer y into a one_hot representation for D and G
     y_onehot = torch.Tensor(opt.batch_size, opt.nclass).cuda().zero_()
     y_onehot.scatter_(1, y.data.view(opt.batch_size, 1).long(), 1)
     y_D = y_onehot.view(opt.batch_size, opt.nclass, 1, 1).expand(opt.batch_size, opt.nclass, opt.image_width, opt.image_width)
@@ -141,8 +152,8 @@ def train(x):
     # fake data
     label.fill_(fake_label)
     z = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
-    x_fake = netG(torch.cat([z, y_G], 1))
-    out = netD(torch.cat([x_fake.detach(), y_D], 1))
+    x_fake = netG(torch.cat([z, y_G], 1)) # generate from G
+    out = netD(torch.cat([x_fake.detach(), y_D], 1)) # .detach() so we don't backprop through G (G is fixed while D trains)
     errD_fake = criterion(out, label)
     errD_fake.backward()
     acc_fake = errD_fake.lt(0.5).sum()
