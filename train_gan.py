@@ -22,17 +22,18 @@ parser.add_argument('--optimizer', default='adam', help='optimizer to train with
 parser.add_argument('--niter', type=int, default=200, help='number of epochs to train for')
 parser.add_argument('--seed', default=1, type=int, help='manual seed')
 parser.add_argument('--epoch_size', type=int, default=600, help='epoch size')
-parser.add_argument('--image_width', type=int, default=32, help='the height / width of the input image to network')
+parser.add_argument('--image_width', type=int, default=32, help='the height / width of the input image to network: 32 | 64')
 parser.add_argument('--channels', default=3, type=int)
-parser.add_argument('--dataset', default='cifar', help='dataset to train with')
+parser.add_argument('--dataset', default='emotion_landscapes', help='dataset to train with: emotion_landscapes | cifar')
 parser.add_argument('--z_dim', default=64, type=int, help='dimensionality of latent space')
 parser.add_argument('--data_threads', type=int, default=5, help='number of data loading threads')
-parser.add_argument('--nclass', type=int, default=10, help='number of classes')
+parser.add_argument('--nclass', type=int, default=9, help='number of classes (should be 9 for emotion landscapes)')
+parser.add_argument('--save_model', action='store_true', help='if true, save the model throughout training')
 
 opt = parser.parse_args()
 
 name = 'z_dim=%d-lr=%.5f' % (opt.z_dim, opt.lr)
-opt.log_dir = '%s/%s/%s' % (opt.log_dir, opt.dataset, name)
+opt.log_dir = '%s/%s_%dx%d/%s' % (opt.log_dir, opt.dataset, opt.image_width, opt.image_width, name)
 
 os.makedirs('%s/gen/' % opt.log_dir, exist_ok=True)
 
@@ -57,7 +58,8 @@ else:
 # ---------------- load the models ----------------
 import models.dcgan as models
 if opt.image_width == 64:
-    assert(False) # non implemented yet
+    netG = models.generator_64x64(opt.z_dim+opt.nclass, opt.channels)
+    netD = models.discriminator_64x64(opt.z_dim, opt.channels+opt.nclass)
 elif opt.image_width == 32:
     netG = models.generator_32x32(opt.z_dim+opt.nclass, opt.channels)
     netD = models.discriminator_32x32(opt.z_dim, opt.channels+opt.nclass)
@@ -187,7 +189,7 @@ for epoch in range(opt.niter):
     plot_gen(epoch)
 
     # save the model
-    if False and epoch % 10 == 0:
+    if opt.save_model and epoch % 10 == 0:
         torch.save({
             'netD': netD,
             'netG': netG,
