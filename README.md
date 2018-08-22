@@ -22,3 +22,9 @@ landscapes
 └───  
 
 ```
+
+To train on the emotion landscapes dataset:
+```
+python train_gan.py --image_width <image_width>
+```
+Image width can be 32 or 64.
