@@ -13,10 +13,10 @@ import progressbar
 import numpy as np
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--lr', default=0.0002, type=float, help='learning rate')
+parser.add_argument('--lr', default=0.0001, type=float, help='learning rate')
 parser.add_argument('--beta1', default=0.5, type=float, help='momentum term for adam')
-parser.add_argument('--batch_size', default=100, type=int, help='batch size')
-parser.add_argument('--log_dir', default='logs/gan/', help='base directory to save logs')
+parser.add_argument('--batch_size', default=64, type=int, help='batch size')
+parser.add_argument('--log_dir', default='logs/wgan/', help='base directory to save logs')
 parser.add_argument('--data_root', default='data/', help='base directory to save logs')
 parser.add_argument('--optimizer', default='adam', help='optimizer to train with')
 parser.add_argument('--niter', type=int, default=200, help='number of epochs to train for')
@@ -25,14 +25,16 @@ parser.add_argument('--epoch_size', type=int, default=600, help='epoch size')
 parser.add_argument('--image_width', type=int, default=32, help='the height / width of the input image to network: 32 | 64')
 parser.add_argument('--channels', default=3, type=int)
 parser.add_argument('--dataset', default='emotion_landscapes', help='dataset to train with: emotion_landscapes | cifar')
-parser.add_argument('--z_dim', default=64, type=int, help='dimensionality of latent space')
+parser.add_argument('--z_dim', default=100, type=int, help='dimensionality of latent space')
+parser.add_argument('--gp_lambda', type=int, default=10, help='gradient penalty hyperparam')
+parser.add_argument('--critic_iters', type=int, default=5, help='gradient penalty hyperparam')
 parser.add_argument('--data_threads', type=int, default=5, help='number of data loading threads')
 parser.add_argument('--nclass', type=int, default=9, help='number of classes (should be 9 for emotion landscapes)')
 parser.add_argument('--save_model', action='store_true', help='if true, save the model throughout training')
 
 opt = parser.parse_args()
 
-name = 'z_dim=%d-lr=%.5f' % (opt.z_dim, opt.lr)
+name = 'z_dim=%d-lr=%.5f-gp_lambda=%d-critic_iters=%d' % (opt.z_dim, opt.lr, opt.gp_lambda, opt.critic_iters)
 opt.log_dir = '%s/%s_%dx%d/%s' % (opt.log_dir, opt.dataset, opt.image_width, opt.image_width, name)
 
 os.makedirs('%s/gen/' % opt.log_dir, exist_ok=True)
@@ -66,10 +68,10 @@ else:
 import models.dcgan as models
 if opt.image_width == 64:
     netG = models.generator_64x64(opt.z_dim+opt.nclass, opt.channels)
-    netD = models.discriminator_64x64(opt.z_dim, opt.channels+opt.nclass)
+    netD = models.discriminator_64x64(opt.z_dim, opt.channels+opt.nclass, gan_type='wgan')
 elif opt.image_width == 32:
     netG = models.generator_32x32(opt.z_dim+opt.nclass, opt.channels)
-    netD = models.discriminator_32x32(opt.z_dim, opt.channels+opt.nclass)
+    netD = models.discriminator_32x32(opt.z_dim, opt.channels+opt.nclass, gan_type='wgan')
 else:
     raise ValueError('Invalid image width %d' % opt.image_width)
 
@@ -105,8 +107,8 @@ training_batch_generator = get_training_batch()
 
 # so all our generations use same noise vector - useful for visualizaiton purposes
 z_fixed = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
-real_label = 1
-fake_label = 0
+one = torch.FloatTensor([1]).cuda()
+mone = one * -1
 
 def plot_gen(epoch):
     nrow = opt.nclass 
@@ -129,7 +131,26 @@ def plot_gen(epoch):
     fname = '%s/gen/%d.png' % (opt.log_dir, epoch) 
     utils.save_tensors_image(fname, to_plot)
 
-def train(x):
+def calc_gradient_penalty(netD, real_data, fake_data):
+    channels = real_data.shape[1]
+    alpha = torch.rand(opt.batch_size, 1)
+    alpha = alpha.expand(opt.batch_size, int(real_data.nelement()/opt.batch_size)).contiguous().view(opt.batch_size, channels, 32, 32).cuda() 
+
+    interpolates = alpha * real_data + ((1 - alpha) * fake_data)
+
+    interpolates.requires_grad = True
+
+    disc_interpolates = netD(interpolates)
+
+    gradients = torch.autograd.grad(outputs=disc_interpolates, inputs=interpolates,
+                              grad_outputs=torch.ones(disc_interpolates.size()).cuda(),
+                              create_graph=True, retain_graph=True, only_inputs=True)[0]
+    gradients = gradients.view(gradients.size(0), -1)
+
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * opt.gp_lambda
+    return gradient_penalty
+
+def train_D(x):
     x, y = x
 
     # convert the integer y into a one_hot representation for D and G
@@ -138,62 +159,83 @@ def train(x):
     y_D = y_onehot.view(opt.batch_size, opt.nclass, 1, 1).expand(opt.batch_size, opt.nclass, opt.image_width, opt.image_width)
     y_G = y_onehot.view(opt.batch_size, opt.nclass, 1, 1)
 
-    label = torch.Tensor(opt.batch_size,).cuda()
     # train discriminator
     netD.zero_grad()
 
     # real data
-    label.fill_(real_label)
     out = netD(torch.cat([x, y_D], 1))
-    errD_real = criterion(out, label)
-    errD_real.backward()
-    acc_real = errD_real.gt(0.5).sum()
+    D_real = out.mean()
+    D_real.backward(mone)
 
     # fake data
-    label.fill_(fake_label)
     z = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
     x_fake = netG(torch.cat([z, y_G], 1)) # generate from G
     out = netD(torch.cat([x_fake.detach(), y_D], 1)) # .detach() so we don't backprop through G (G is fixed while D trains)
-    errD_fake = criterion(out, label)
-    errD_fake.backward()
-    acc_fake = errD_fake.lt(0.5).sum()
+    D_fake = out.mean()
+    D_fake.backward(one)
 
-    errD = errD_real +errD_fake
+    if opt.gp_lambda > 0:
+        gradient_penalty = calc_gradient_penalty(netD, torch.cat([x.detach(), y_D], 1), torch.cat([x_fake.detach(), y_D], 1))
+        gradient_penalty.backward()
+    else:
+        gradient_penalty = 0
+
+    D_cost = D_fake - D_real + gradient_penalty
+    wasserstein_D = D_real - D_fake
     optimizerD.step()
+
+    return D_cost.item() #, wasserstein_D.item()
+
+def train_G(x):
+    x, y = x
+
+    # convert the integer y into a one_hot representation for D and G
+    y_onehot = torch.Tensor(opt.batch_size, opt.nclass).cuda().zero_()
+    y_onehot.scatter_(1, y.data.view(opt.batch_size, 1).long(), 1)
+    y_D = y_onehot.view(opt.batch_size, opt.nclass, 1, 1).expand(opt.batch_size, opt.nclass, opt.image_width, opt.image_width)
+    y_G = y_onehot.view(opt.batch_size, opt.nclass, 1, 1)
+
 
     # train generator
     netG.zero_grad()
-    label.fill_(real_label)
+
+    z = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
+    x_fake = netG(torch.cat([z, y_G], 1)) # generate from G
     out = netD(torch.cat([x_fake, y_D], 1))
-    errG = criterion(out, label)
-    errG.backward()
+    G = out.mean()
+    G.backward(mone)
+    G_cost = -G
     optimizerG.step()
 
-    return errD.item(), errG.item(), acc_real.item(), acc_fake.item()
+    return G_cost.item()
 
 # --------- training loop ------------------------------------
 for epoch in range(opt.niter):
     netD.train()
     netG.train()
-    epoch_errD = 0
-    epoch_errG = 0
-    epoch_acc_real = 0
-    epoch_acc_fake = 0
+    epoch_costD = 0
+    epoch_costG = 0
     progress = progressbar.ProgressBar(max_value=opt.epoch_size).start()
     for i in range(opt.epoch_size):
         progress.update(i+1)
         x = next(training_batch_generator)
 
-        errD, errG, acc_real, acc_fake = train(x)
-        epoch_errD += errD
-        epoch_errG += errG
-        epoch_acc_real += acc_real
-        epoch_acc_fake += acc_fake
+        costD = 0
+        for ii in range(opt.critic_iters):
+            x = next(training_batch_generator)
+            costD += train_D(x)
+        costD /= opt.critic_iters
+
+        x = next(training_batch_generator)
+        costG = train_G(x)
+
+        epoch_costD += costD
+        epoch_costG += costG
 
     progress.finish()
     utils.clear_progressbar()
 
-    print('[%02d] errD : %.5f | errG : %.5f | acc real : %.5f | acc fake : %.5f (%d)' % (epoch, epoch_errD/opt.epoch_size, epoch_errG/opt.epoch_size, epoch_acc_real/opt.epoch_size, epoch_acc_fake/opt.epoch_size, epoch*opt.epoch_size))
+    print('[%02d] costD : %.5f | costG : %.5f (%d)' % (epoch, epoch_costD/opt.epoch_size, epoch_costG/opt.epoch_size, epoch*opt.epoch_size))
 
     # plot some stuff
     #netG.eval()

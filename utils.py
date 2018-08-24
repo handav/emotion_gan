@@ -43,7 +43,8 @@ def load_dataset(opt):
             transforms.RandomCrop(300),
             transforms.Resize(opt.image_width),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.ToTensor() # converts to torch tensor and scales from [0, 255] -> [0, 1]
+            transforms.ToTensor(), # converts to torch tensor and scales from [0, 255] -> [0, 1]
+            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
             ])
                
         train_data = EmotionLoader(transform)
@@ -108,12 +109,12 @@ def image_tensor(inputs, padding=1):
         return result
 
 def make_image(tensor):
-    #tensor = tensor.cpu().clamp(0, 1)
     if tensor.size(0) == 1:
         tensor = tensor.expand(3, tensor.size(1), tensor.size(2))
 
     if tensor.min() < 0: # if data [-1, 1] scale to [0, 1]
         tensor.data = tensor.data.mul(0.5).add(0.5)
+    tensor = tensor.cpu().clamp(0, 1)
     return scipy.misc.toimage(tensor.numpy(),
                               high=255*tensor.max().item(),
                               channel_axis=0)
