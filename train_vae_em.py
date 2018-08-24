@@ -122,7 +122,7 @@ def plot_gen(epoch):
     nrow = opt.nclass 
     ncol = int(opt.batch_size/nrow) 
 
-    # randomly sample classes
+    # different class per row
     y_onehot = torch.Tensor(opt.batch_size, opt.nclass, 1, 1).cuda().zero_()
     for i in range(nrow):
         for j in range(ncol):
