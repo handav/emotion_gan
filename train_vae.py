@@ -39,7 +39,7 @@ kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 #     batch_size=args.batch_size, 
 #     shuffle=True, 
 #     **kwargs)
-trainset = utils.load_dataset(opt) 
+trainset = utils.load_dataset(args) 
 train_loader = torch.utils.data.DataLoader(
     trainset,
     batch_size=args.batch_size, 
