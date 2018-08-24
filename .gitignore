@@ -4,3 +4,9 @@ logs/
 __pycache__
 */__pycache__
 .nfs*
+.DS_Store
+han_openai.pem
+notes.py
+gen/
+emotion_landscapes/
+data_loader.py
