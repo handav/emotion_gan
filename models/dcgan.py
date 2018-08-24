@@ -160,8 +160,8 @@ class vae_32x32(nn.Module):
                 dcgan_conv(nf * 4, nf * 8),
                 # state size. (nf*8) x 2 x 2
         )
-        self.mu_net = nn.Conv2d(nf * 8, z_dim, 2, 1, 0),
-        self.logvar_net = nn.Conv2d(nf * 8, z_dim, 2, 1, 0),
+        self.mu_net = nn.Conv2d(nf * 8, z_dim, 2, 1, 0)
+        self.logvar_net = nn.Conv2d(nf * 8, z_dim, 2, 1, 0)
 
         self.decoder = nn.Sequential(
                 # input is Z, going into a convolution
@@ -188,8 +188,8 @@ class vae_32x32(nn.Module):
 
     def encode(self, x):
         h = self.encoder(x)
-        mu = self.mu(h)
-        logvar = self.logvar(h)
+        mu = self.mu_net(h)
+        logvar = self.logvar_net(h)
         return mu, logvar
 
     def decode(self, z, y):
@@ -199,7 +199,10 @@ class vae_32x32(nn.Module):
         x, y = input # image, labels
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
-        x_hat = self.decode(z, y)
+        if self.training:
+            x_hat = self.decode(z, y)
+        else:
+            x_hat = self.decode(mu, y)
         return x_hat, mu, logvar
 
         
