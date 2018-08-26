@@ -30,10 +30,11 @@ parser.add_argument('--data_threads', type=int, default=5, help='number of data 
 parser.add_argument('--nclass', type=int, default=9, help='number of classes (should be 9 for emotion landscapes)')
 parser.add_argument('--save_model', action='store_true', help='if true, save the model throughout training')
 parser.add_argument('--beta', default=0.001, type=float, help='learning rate')
+parser.add_argument('--all_labels', action='store_true', help='if true, give full distribution over labels to G and D')
 
 opt = parser.parse_args()
 
-name = 'z_dim=%d-lr=%.5f-beta=%.3f' % (opt.z_dim, opt.lr, opt.beta)
+name = 'z_dim=%d-lr=%.5f-beta=%.4f-all_labels=%s' % (opt.z_dim, opt.lr, opt.beta, opt.all_labels)
 opt.log_dir = '%s/%s_%dx%d/%s' % (opt.log_dir, opt.dataset, opt.image_width, opt.image_width, name)
 
 os.makedirs('%s/gen/' % opt.log_dir, exist_ok=True)
@@ -70,7 +71,7 @@ if opt.image_width == 64:
     assert(False) # not implemented yet
     #model = models.vae_64x64(opt.z_dim+opt.nclass, opt.channels)
 elif opt.image_width == 32:
-    model = models.vae_32x32(opt.z_dim, opt.nclass, opt.channels)
+    model = models.cvae_32x32(opt.z_dim, opt.nclass, opt.channels)
 else:
     raise ValueError('Invalid image width %d' % opt.image_width)
 
@@ -111,16 +112,50 @@ train_loader = torch.utils.data.DataLoader(
 
 def get_training_batch():
     while True:
-        for x, y in train_loader:
-            yield [x.cuda(), y.cuda()]
+        if opt.all_labels:
+            for x, y, yp in train_loader:
+                yield [x.cuda(), y.cuda(), yp.cuda()]
+        else:
+            for x, y in train_loader:
+                yield [x.cuda(), y.cuda(), None]
 training_batch_generator = get_training_batch()
 
 # so all our generations use same noise vector - useful for visualizaiton purposes
 z_fixed = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
+nrow = opt.nclass 
+ncol = int(opt.batch_size/nrow) 
+for j in range(ncol):
+    zz = torch.randn(opt.z_dim, 1, 1)
+    for i in range(nrow):
+        z_fixed[i*ncol+j].copy_(zz)
 
-def plot_gen(epoch):
+def plot_gen(x, epoch):
+    x, y, yp = x
+
     nrow = opt.nclass 
     ncol = int(opt.batch_size/nrow) 
+
+    if opt.all_labels:
+        y_onehot = yp.view(opt.batch_size, opt.nclass, 1, 1)
+
+        # different class per row
+        y_onehot = torch.Tensor(opt.batch_size, opt.nclass, 1, 1).cuda().zero_()
+        for i in range(nrow):
+            for j in range(ncol):
+                y_onehot[i*ncol+j][i] = 1
+        gen = model.decode(z_fixed, y_onehot)
+
+        to_plot = []
+        for i in range(nrow):
+            row = []
+            for j in range(ncol):
+                row.append(gen[i*ncol+j])
+            to_plot.append(row)
+
+        fname = '%s/gen/p_%d.png' % (opt.log_dir, epoch) 
+        utils.save_tensors_image(fname, to_plot)
+
+    y_onehot = y_onehot.view(opt.batch_size, opt.nclass, 1, 1)
 
     # different class per row
     y_onehot = torch.Tensor(opt.batch_size, opt.nclass, 1, 1).cuda().zero_()
@@ -140,12 +175,17 @@ def plot_gen(epoch):
     utils.save_tensors_image(fname, to_plot)
 
 def plot_rec(x, epoch):
-    x, y = x
-    y_onehot = torch.Tensor(opt.batch_size, opt.nclass).cuda().zero_()
-    y_onehot.scatter_(1, y.data.view(opt.batch_size, 1).long(), 1)
+    x, y, yp = x
+
+    # convert the integer y into a one_hot representation for decoder 
+    if opt.all_labels:
+        y_onehot = yp
+    else:
+        y_onehot = torch.Tensor(opt.batch_size, opt.nclass).cuda().zero_()
+        y_onehot.scatter_(1, y.data.view(opt.batch_size, 1).long(), 1)
     y_onehot = y_onehot.view(opt.batch_size, opt.nclass, 1, 1)
 
-    rec, _, _= model([x, y_onehot])
+    rec, _, _= model((x, y_onehot))
 
     to_plot = []
     nrow, ncol = 8, 8
@@ -159,11 +199,14 @@ def plot_rec(x, epoch):
     utils.save_tensors_image('%s/rec/%d.png' %(opt.log_dir, epoch), to_plot)
 
 def train(x):
-    x, y = x
+    x, y, yp = x
 
     # convert the integer y into a one_hot representation for decoder 
-    y_onehot = torch.Tensor(opt.batch_size, opt.nclass).cuda().zero_()
-    y_onehot.scatter_(1, y.data.view(opt.batch_size, 1).long(), 1)
+    if opt.all_labels:
+        y_onehot = yp
+    else:
+        y_onehot = torch.Tensor(opt.batch_size, opt.nclass).cuda().zero_()
+        y_onehot.scatter_(1, y.data.view(opt.batch_size, 1).long(), 1)
     y_onehot = y_onehot.view(opt.batch_size, opt.nclass, 1, 1)
 
     model.zero_grad()
@@ -199,11 +242,11 @@ for epoch in range(opt.niter):
 
     # plot some stuff
     model.eval()
-    plot_gen(epoch)
 
     # XXX: se should have some test data
     x = next(training_batch_generator)
     plot_rec(x, epoch)
+    plot_gen(x, epoch)
 
     # save the model
     if opt.save_model and epoch % 10 == 0:

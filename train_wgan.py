@@ -31,10 +31,11 @@ parser.add_argument('--critic_iters', type=int, default=5, help='gradient penalt
 parser.add_argument('--data_threads', type=int, default=5, help='number of data loading threads')
 parser.add_argument('--nclass', type=int, default=9, help='number of classes (should be 9 for emotion landscapes)')
 parser.add_argument('--save_model', action='store_true', help='if true, save the model throughout training')
+parser.add_argument('--all_labels', action='store_true', help='if true, give full distribution over labels to G and D')
 
 opt = parser.parse_args()
 
-name = 'z_dim=%d-lr=%.5f-gp_lambda=%d-critic_iters=%d' % (opt.z_dim, opt.lr, opt.gp_lambda, opt.critic_iters)
+name = 'z_dim=%d-lr=%.5f-gp_lambda=%d-critic_iters=%d-all_labels=%s' % (opt.z_dim, opt.lr, opt.gp_lambda, opt.critic_iters, opt.all_labels)
 opt.log_dir = '%s/%s_%dx%d/%s' % (opt.log_dir, opt.dataset, opt.image_width, opt.image_width, name)
 
 os.makedirs('%s/gen/' % opt.log_dir, exist_ok=True)
@@ -68,10 +69,17 @@ else:
 import models.dcgan as models
 if opt.image_width == 64:
     netG = models.generator_64x64(opt.z_dim+opt.nclass, opt.channels)
-    netD = models.discriminator_64x64(opt.z_dim, opt.channels+opt.nclass, gan_type='wgan')
+    if opt.all_labels:
+        assert (False) # not implemented yet
+        netD = models.conditional_discriminator_64x64(opt.z_dim, opt.nclass, opt.channels, gan_type='wgan')
+    else:
+        netD = models.discriminator_64x64(opt.z_dim, opt.channels+opt.nclass, gan_type='wgan')
 elif opt.image_width == 32:
     netG = models.generator_32x32(opt.z_dim+opt.nclass, opt.channels)
-    netD = models.discriminator_32x32(opt.z_dim, opt.channels+opt.nclass, gan_type='wgan')
+    if opt.all_labels:
+        netD = models.conditional_discriminator_32x32(opt.z_dim, opt.nclass, opt.channels, gan_type='wgan')
+    else:
+        netD = models.discriminator_32x32(opt.z_dim, opt.channels+opt.nclass, gan_type='wgan')
 else:
     raise ValueError('Invalid image width %d' % opt.image_width)
 
@@ -101,8 +109,12 @@ train_loader = torch.utils.data.DataLoader(
 
 def get_training_batch():
     while True:
-        for x, y in train_loader:
-            yield [x.cuda(), y.cuda()]
+        if opt.all_labels:
+            for x, y, yp in train_loader:
+                yield [x.cuda(), y.cuda(), yp.cuda()]
+        else:
+            for x, y in train_loader:
+                yield [x.cuda(), y.cuda(), None]
 training_batch_generator = get_training_batch()
 
 # so all our generations use same noise vector - useful for visualizaiton purposes
@@ -110,7 +122,24 @@ z_fixed = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
 one = torch.FloatTensor([1]).cuda()
 mone = one * -1
 
-def plot_gen(epoch):
+def plot(x, epoch):
+    _, _, yp = x
+    nrow = opt.nclass 
+    ncol = int(opt.batch_size/nrow) 
+
+    gen = netG(torch.cat([z_fixed, yp.view(opt.batch_size, opt.nclass, 1, 1)], 1))
+
+    to_plot = []
+    for i in range(nrow):
+        row = []
+        for j in range(ncol):
+            row.append(gen[i*ncol+j])
+        to_plot.append(row)
+
+    fname = '%s/gen/yp_%d.png' % (opt.log_dir, epoch) 
+    utils.save_tensors_image(fname, to_plot)
+
+def plot_1hot(epoch):
     nrow = opt.nclass 
     ncol = int(opt.batch_size/nrow) 
 
@@ -130,6 +159,25 @@ def plot_gen(epoch):
 
     fname = '%s/gen/%d.png' % (opt.log_dir, epoch) 
     utils.save_tensors_image(fname, to_plot)
+
+def calc_gradient_penalty_vec_input(netD, real_data, fake_data):
+    channels = real_data[0].shape[1]
+    alpha = torch.rand(opt.batch_size, 1)
+    alpha = alpha.expand(opt.batch_size, int(real_data[0].nelement()/opt.batch_size)).contiguous().view(opt.batch_size, channels, opt.image_width, opt.image_width).cuda() 
+
+    interpolates = alpha * real_data[0] + ((1 - alpha) * fake_data[0])
+
+    interpolates.requires_grad = True
+
+    disc_interpolates = netD((interpolates, real_data[1]))
+
+    gradients = torch.autograd.grad(outputs=disc_interpolates, inputs=interpolates,
+                              grad_outputs=torch.ones(disc_interpolates.size()).cuda(),
+                              create_graph=True, retain_graph=True, only_inputs=True)[0]
+    gradients = gradients.view(gradients.size(0), -1)
+
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * opt.gp_lambda
+    return gradient_penalty
 
 def calc_gradient_penalty(netD, real_data, fake_data):
     channels = real_data.shape[1]
@@ -151,31 +199,43 @@ def calc_gradient_penalty(netD, real_data, fake_data):
     return gradient_penalty
 
 def train_D(x):
-    x, y = x
+    x, y, yp = x
 
     # convert the integer y into a one_hot representation for D and G
     y_onehot = torch.Tensor(opt.batch_size, opt.nclass).cuda().zero_()
     y_onehot.scatter_(1, y.data.view(opt.batch_size, 1).long(), 1)
     y_D = y_onehot.view(opt.batch_size, opt.nclass, 1, 1).expand(opt.batch_size, opt.nclass, opt.image_width, opt.image_width)
-    y_G = y_onehot.view(opt.batch_size, opt.nclass, 1, 1)
+    if opt.all_labels:
+        y_G = yp.view(opt.batch_size, opt.nclass, 1, 1)
+    else:
+        y_G = y_onehot.view(opt.batch_size, opt.nclass, 1, 1)
 
     # train discriminator
     netD.zero_grad()
 
     # real data
-    out = netD(torch.cat([x, y_D], 1))
+    if opt.all_labels:
+        out = netD((x, yp))
+    else:
+        out = netD(torch.cat([x, y_D], 1))
     D_real = out.mean()
     D_real.backward(mone)
 
     # fake data
     z = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
     x_fake = netG(torch.cat([z, y_G], 1)) # generate from G
-    out = netD(torch.cat([x_fake.detach(), y_D], 1)) # .detach() so we don't backprop through G (G is fixed while D trains)
+    if opt.all_labels:
+        out = netD((x_fake.detach(), yp)) # .detach() so we don't backprop through G (G is fixed while D trains)
+    else:
+        out = netD(torch.cat([x_fake.detach(), y_D], 1)) # .detach() so we don't backprop through G (G is fixed while D trains)
     D_fake = out.mean()
     D_fake.backward(one)
 
     if opt.gp_lambda > 0:
-        gradient_penalty = calc_gradient_penalty(netD, torch.cat([x.detach(), y_D], 1), torch.cat([x_fake.detach(), y_D], 1))
+        if opt.all_labels:
+            gradient_penalty = calc_gradient_penalty_vec_input(netD, [x.detach(), yp], [x_fake.detach(), yp])
+        else:
+            gradient_penalty = calc_gradient_penalty(netD, torch.cat([x.detach(), y_D], 1), torch.cat([x_fake.detach(), y_D], 1))
         gradient_penalty.backward()
     else:
         gradient_penalty = 0
@@ -187,13 +247,16 @@ def train_D(x):
     return D_cost.item() #, wasserstein_D.item()
 
 def train_G(x):
-    x, y = x
+    x, y, yp = x
 
     # convert the integer y into a one_hot representation for D and G
     y_onehot = torch.Tensor(opt.batch_size, opt.nclass).cuda().zero_()
     y_onehot.scatter_(1, y.data.view(opt.batch_size, 1).long(), 1)
     y_D = y_onehot.view(opt.batch_size, opt.nclass, 1, 1).expand(opt.batch_size, opt.nclass, opt.image_width, opt.image_width)
-    y_G = y_onehot.view(opt.batch_size, opt.nclass, 1, 1)
+    if opt.all_labels:
+        y_G = yp.view(opt.batch_size, opt.nclass, 1, 1)
+    else:
+        y_G = y_onehot.view(opt.batch_size, opt.nclass, 1, 1)
 
 
     # train generator
@@ -201,7 +264,10 @@ def train_G(x):
 
     z = torch.randn(opt.batch_size, opt.z_dim, 1, 1).cuda()
     x_fake = netG(torch.cat([z, y_G], 1)) # generate from G
-    out = netD(torch.cat([x_fake, y_D], 1))
+    if opt.all_labels:
+        out = netD((x_fake, yp))
+    else:
+        out = netD(torch.cat([x_fake, y_D], 1))
     G = out.mean()
     G.backward(mone)
     G_cost = -G
@@ -239,7 +305,12 @@ for epoch in range(opt.niter):
 
     # plot some stuff
     #netG.eval()
-    plot_gen(epoch)
+    if opt.all_labels:
+        x = next(training_batch_generator)
+        plot(x, epoch)
+        plot_1hot(epoch)
+    else:
+        plot_1hot(epoch)
 
     # save the model
     if opt.save_model and epoch % 10 == 0:

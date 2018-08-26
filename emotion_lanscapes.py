@@ -8,10 +8,11 @@ class EmotionLoader(object):
 
     """Data Handler that loads robot pushing data."""
 
-    def __init__(self, transform): #image_width, crop_sz=300):
+    def __init__(self, transform, all_labels=False): #image_width, crop_sz=300):
         #self.crop_sz = 300
         #self.image_width = image_width
         self.transform = transform
+        self.all_labels = all_labels
         fname = 'cleaned.csv'
         emotions = {
                 'joy'           : 0,
@@ -45,5 +46,11 @@ class EmotionLoader(object):
         img = Image.open(fname)
         img = self.transform(img)
         label = labels[np.random.randint(len(labels))]
-        return img, label
+        if self.all_labels:
+            d = torch.zeros(9)
+            for l in labels: d[l] += 1 
+            d.div_(d.sum())
+            return img, label, d
+        else:
+            return img, label 
 

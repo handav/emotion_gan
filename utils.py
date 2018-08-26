@@ -46,8 +46,9 @@ def load_dataset(opt):
             transforms.ToTensor(), # converts to torch tensor and scales from [0, 255] -> [0, 1]
             # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
             ])
-               
-        train_data = EmotionLoader(transform)
+        train_data = EmotionLoader(
+                transform, 
+                all_labels=('all_labels' in opt and opt.all_labels) or False)
     else:
         raise ValueError('Unknown dataset %s' % opt.dataset)
     
